@@ -7,6 +7,7 @@ const base64url = std.base64.url_safe_no_pad;
 const Algorithm = enum {
     HS256,
     HS384,
+    HS512,
 
     pub fn jsonStringify(
         value: @This(),
@@ -68,6 +69,7 @@ pub fn encodeMessage(allocator: *std.mem.Allocator, message: []const u8, signatu
     const signature = switch (signatureOptions.alg) {
         .HS256 => &generate_signature_hmac_sha256(signatureOptions.key, protected_header_base64, message_base64),
         .HS384 => &generate_signature_hmac_sha384(signatureOptions.key, protected_header_base64, message_base64),
+        .HS512 => &generate_signature_hmac_sha512(signatureOptions.key, protected_header_base64, message_base64),
     };
     const signature_base64_len = base64url.Encoder.calcSize(signature.len);
 
@@ -189,6 +191,7 @@ pub fn validateMessage(allocator: *std.mem.Allocator, tokenText: []const u8, sig
                 const gen_sig = switch (signatureOptions.alg) {
                     .HS256 => &generate_signature_hmac_sha256(signatureOptions.key, jose_base64, payload_base64),
                     .HS384 => &generate_signature_hmac_sha384(signatureOptions.key, jose_base64, payload_base64),
+                    .HS512 => &generate_signature_hmac_sha512(signatureOptions.key, jose_base64, payload_base64),
                 };
                 if (!std.mem.eql(u8, signature, gen_sig)) {
                     return error.InvalidSignature;
@@ -251,6 +254,19 @@ pub fn generate_signature_hmac_sha384(key: []const u8, protectedHeaderBase64: []
     return out;
 }
 
+const HmacSha512 = std.crypto.auth.hmac.sha2.HmacSha512;
+pub fn generate_signature_hmac_sha512(key: []const u8, protectedHeaderBase64: []const u8, payloadBase64: []const u8) [HmacSha512.mac_length]u8 {
+    var h = HmacSha512.init(key);
+    h.update(protectedHeaderBase64);
+    h.update(".");
+    h.update(payloadBase64);
+
+    var out: [HmacSha512.mac_length]u8 = undefined;
+    h.final(&out);
+
+    return out;
+}
+
 test "generate jws based tokens" {
     const payload = .{
         .sub = "1234567890",
@@ -268,6 +284,12 @@ test "generate jws based tokens" {
         .HS384,
         payload,
         "eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.MSnfJgb61edr7STbvEqi4Mj3Vvmb8Kh3lsnlXacv0cDAGYhBOpNmOrhWwQgTJCKj",
+        "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow",
+    );
+    try test_generate(
+        .HS512,
+        payload,
+        "eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.39Xvky4dIVLaVaOW5BgbO7smTZUyvIcRtBE3i2hVW3GbjSeUFmpwRbMy94CfvgHC3KHT6V4-pnkNTotCWer-cw",
         "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow",
     );
 }
@@ -289,6 +311,12 @@ test "validate jws based tokens" {
         .HS384,
         expected,
         "eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJqb2UiLCJleHAiOjEzMDA4MTkzODAsImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.2B5ucfIDtuSVRisXjPwZlqPAwgEicFIX7Gd2r8rlAbLukenHTW0Rbx1ca1VJSyLg",
+        "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow",
+    );
+    try test_validate(
+        .HS512,
+        expected,
+        "eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJqb2UiLCJleHAiOjEzMDA4MTkzODAsImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.TrGchM_jCqCTAYUQlFmXt-KOyKO0O2wYYW5fUSV8jtdgqWJ74cqNA1zc9Ix7TU4qJ-Y32rKmP9Xpu99yiShx6g",
         "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow",
     );
 }

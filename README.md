@@ -28,7 +28,7 @@ Encryption algorithms:
 
 -   [x] HS256
 -   [x] HS384
--   [ ] HS512
+-   [x] HS512
 -   [ ] PS256
 -   [ ] PS384
 -   [ ] PS512
