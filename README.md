@@ -27,7 +27,7 @@ based on [RFC 7159][].
 Encryption algorithms:
 
 -   [x] HS256
--   [ ] HS384
+-   [x] HS384
 -   [ ] HS512
 -   [ ] PS256
 -   [ ] PS384

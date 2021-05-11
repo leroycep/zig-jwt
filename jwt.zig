@@ -6,6 +6,7 @@ const base64url = std.base64.url_safe_no_pad;
 
 const Algorithm = enum {
     HS256,
+    HS384,
 
     pub fn jsonStringify(
         value: @This(),
@@ -64,18 +65,17 @@ pub fn encodeMessage(allocator: *std.mem.Allocator, message: []const u8, signatu
     jwt_text.items[protected_header_base64_len] = '.';
     _ = base64url.Encoder.encode(message_base64, message);
 
-    switch (signatureOptions.alg) {
-        .HS256 => {
-            const signature = generate_signature_hmac_sha256(signatureOptions.key, protected_header_base64, message_base64);
-            const signature_base64_len = base64url.Encoder.calcSize(signature.len);
+    const signature = switch (signatureOptions.alg) {
+        .HS256 => &generate_signature_hmac_sha256(signatureOptions.key, protected_header_base64, message_base64),
+        .HS384 => &generate_signature_hmac_sha384(signatureOptions.key, protected_header_base64, message_base64),
+    };
+    const signature_base64_len = base64url.Encoder.calcSize(signature.len);
 
-            try jwt_text.resize(message_base64_len + 1 + protected_header_base64_len + 1 + signature_base64_len);
-            var signature_base64 = jwt_text.items[message_base64_len + 1 + protected_header_base64_len + 1 ..][0..signature_base64_len];
+    try jwt_text.resize(message_base64_len + 1 + protected_header_base64_len + 1 + signature_base64_len);
+    var signature_base64 = jwt_text.items[message_base64_len + 1 + protected_header_base64_len + 1 ..][0..signature_base64_len];
 
-            jwt_text.items[message_base64_len + 1 + protected_header_base64_len] = '.';
-            _ = base64url.Encoder.encode(signature_base64, &signature);
-        },
-    }
+    jwt_text.items[message_base64_len + 1 + protected_header_base64_len] = '.';
+    _ = base64url.Encoder.encode(signature_base64, signature);
 
     return jwt_text.toOwnedSlice();
 }
@@ -186,13 +186,12 @@ pub fn validateMessage(allocator: *std.mem.Allocator, tokenText: []const u8, sig
                 defer allocator.free(signature);
                 try base64url.Decoder.decode(signature, signature_base64);
 
-                switch (signatureOptions.alg) {
-                    .HS256 => {
-                        const gen_sig = generate_signature_hmac_sha256(signatureOptions.key, jose_base64, payload_base64);
-                        if (!std.mem.eql(u8, signature, &gen_sig)) {
-                            return error.InvalidSignature;
-                        }
-                    },
+                const gen_sig = switch (signatureOptions.alg) {
+                    .HS256 => &generate_signature_hmac_sha256(signatureOptions.key, jose_base64, payload_base64),
+                    .HS384 => &generate_signature_hmac_sha384(signatureOptions.key, jose_base64, payload_base64),
+                };
+                if (!std.mem.eql(u8, signature, gen_sig)) {
+                    return error.InvalidSignature;
                 }
 
                 break :get_message try allocator.dupe(u8, payload_base64);
@@ -239,52 +238,103 @@ pub fn generate_signature_hmac_sha256(key: []const u8, protectedHeaderBase64: []
     return out;
 }
 
-test "generate jws hmac sha-256" {
-    const expected = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SVT7VUK8eOve-SCacPaU_bkzT3SFr9wk5EQciofG4Qo";
-    const key_base64 = "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow";
+const HmacSha384 = std.crypto.auth.hmac.sha2.HmacSha384;
+pub fn generate_signature_hmac_sha384(key: []const u8, protectedHeaderBase64: []const u8, payloadBase64: []const u8) [HmacSha384.mac_length]u8 {
+    var h = HmacSha384.init(key);
+    h.update(protectedHeaderBase64);
+    h.update(".");
+    h.update(payloadBase64);
 
-    var key = try std.testing.allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(key_base64));
-    defer std.testing.allocator.free(key);
-    try base64url.Decoder.decode(key, key_base64);
+    var out: [HmacSha384.mac_length]u8 = undefined;
+    h.final(&out);
 
-    // {"sub": "1234567890","name": "John Doe","iat": 1516239022}
+    return out;
+}
+
+test "generate jws based tokens" {
     const payload = .{
         .sub = "1234567890",
         .name = "John Doe",
         .iat = 1516239022,
     };
 
-    const token = try encode(std.testing.allocator, payload, .{ .alg = .HS256, .key = key });
+    try test_generate(
+        .HS256,
+        payload,
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SVT7VUK8eOve-SCacPaU_bkzT3SFr9wk5EQciofG4Qo",
+        "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow",
+    );
+    try test_generate(
+        .HS384,
+        payload,
+        "eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.MSnfJgb61edr7STbvEqi4Mj3Vvmb8Kh3lsnlXacv0cDAGYhBOpNmOrhWwQgTJCKj",
+        "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow",
+    );
+}
+
+test "validate jws based tokens" {
+    const expected = TestValidatePayload{
+        .iss = "joe",
+        .exp = 1300819380,
+        .@"http://example.com/is_root" = true,
+    };
+
+    try test_validate(
+        .HS256,
+        expected,
+        "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+        "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow",
+    );
+    try test_validate(
+        .HS384,
+        expected,
+        "eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJqb2UiLCJleHAiOjEzMDA4MTkzODAsImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.2B5ucfIDtuSVRisXjPwZlqPAwgEicFIX7Gd2r8rlAbLukenHTW0Rbx1ca1VJSyLg",
+        "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow",
+    );
+}
+
+test "generate and then validate jws token" {
+    try test_generate_then_validate(.{ .alg = .HS256, .key = "a jws hmac sha-256 test key" });
+    try test_generate_then_validate(.{ .alg = .HS384, .key = "a jws hmac sha-384 test key" });
+}
+
+const TestPayload = struct {
+    sub: []const u8,
+    name: []const u8,
+    iat: i64,
+};
+
+fn test_generate(algorithm: Algorithm, payload: TestPayload, expected: []const u8, key_base64: []const u8) !void {
+    var key = try std.testing.allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(key_base64));
+    defer std.testing.allocator.free(key);
+    try base64url.Decoder.decode(key, key_base64);
+
+    const token = try encode(std.testing.allocator, payload, .{ .alg = algorithm, .key = key });
     defer std.testing.allocator.free(token);
 
     try std.testing.expectEqualSlices(u8, expected, token);
 }
 
-test "validate jws hmac sha-256" {
-    const token = "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-    const key_base64 = "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow";
+const TestValidatePayload = struct {
+    iss: []const u8,
+    exp: i64,
+    @"http://example.com/is_root": bool,
+};
 
+fn test_validate(algorithm: Algorithm, expected: TestValidatePayload, token: []const u8, key_base64: []const u8) !void {
     var key = try std.testing.allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(key_base64));
     defer std.testing.allocator.free(key);
     try base64url.Decoder.decode(key, key_base64);
 
-    const Payload = struct {
-        iss: []const u8,
-        exp: i64,
-        @"http://example.com/is_root": bool,
-    };
+    var claims = try validate(TestValidatePayload, std.testing.allocator, token, .{ .alg = algorithm, .key = key });
+    defer validateFree(TestValidatePayload, std.testing.allocator, claims);
 
-    var claims = try validate(Payload, std.testing.allocator, token, .{ .alg = .HS256, .key = key });
-    defer validateFree(Payload, std.testing.allocator, claims);
-
-    try std.testing.expectEqualSlices(u8, "joe", claims.iss);
-    try std.testing.expectEqual(@as(i64, 1300819380), claims.exp);
-    try std.testing.expectEqual(true, claims.@"http://example.com/is_root");
+    try std.testing.expectEqualSlices(u8, expected.iss, claims.iss);
+    try std.testing.expectEqual(expected.exp, claims.exp);
+    try std.testing.expectEqual(expected.@"http://example.com/is_root", claims.@"http://example.com/is_root");
 }
 
-test "generate and then validate jws hmac sha-256" {
-    const key = "a jws hmac sha-256 test key";
-
+fn test_generate_then_validate(signatureOptions: SignatureOptions) !void {
     const Payload = struct {
         sub: []const u8,
         name: []const u8,
@@ -295,8 +345,6 @@ test "generate and then validate jws hmac sha-256" {
         .name = "John Doe",
         .iat = 1516239022,
     };
-
-    const signatureOptions = SignatureOptions{ .alg = .HS256, .key = key };
 
     const token = try encode(std.testing.allocator, payload, signatureOptions);
     defer std.testing.allocator.free(token);
