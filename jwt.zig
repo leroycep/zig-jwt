@@ -33,6 +33,10 @@ pub fn encode(allocator: *std.mem.Allocator, payload: anytype, signatureOptions:
 
     try std.json.stringify(payload, .{}, payload_json.writer());
 
+    return try encodeMessage(allocator, payload_json.items, signatureOptions);
+}
+
+pub fn encodeMessage(allocator: *std.mem.Allocator, message: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
     var protected_header = std.json.ObjectMap.init(allocator);
     defer protected_header.deinit();
     try protected_header.put("alg", .{ .String = std.meta.tagName(signatureOptions.alg) });
@@ -46,29 +50,29 @@ pub fn encode(allocator: *std.mem.Allocator, payload: anytype, signatureOptions:
 
     try std.json.stringify(Value{ .Object = protected_header }, .{}, protected_header_json.writer());
 
-    const payload_base64_len = base64url.Encoder.calcSize(payload_json.items.len);
+    const message_base64_len = base64url.Encoder.calcSize(message.len);
     const protected_header_base64_len = base64url.Encoder.calcSize(protected_header_json.items.len);
 
     var jwt_text = std.ArrayList(u8).init(allocator);
     defer jwt_text.deinit();
-    try jwt_text.resize(payload_base64_len + 1 + protected_header_base64_len);
+    try jwt_text.resize(message_base64_len + 1 + protected_header_base64_len);
 
     var protected_header_base64 = jwt_text.items[0..protected_header_base64_len];
-    var payload_base64 = jwt_text.items[protected_header_base64_len + 1 ..][0..payload_base64_len];
+    var message_base64 = jwt_text.items[protected_header_base64_len + 1 ..][0..message_base64_len];
 
     _ = base64url.Encoder.encode(protected_header_base64, protected_header_json.items);
     jwt_text.items[protected_header_base64_len] = '.';
-    _ = base64url.Encoder.encode(payload_base64, payload_json.items);
+    _ = base64url.Encoder.encode(message_base64, message);
 
     switch (signatureOptions.alg) {
         .HS256 => {
-            const signature = generate_signature_hmac_sha256(signatureOptions.key, protected_header_base64, payload_base64);
+            const signature = generate_signature_hmac_sha256(signatureOptions.key, protected_header_base64, message_base64);
             const signature_base64_len = base64url.Encoder.calcSize(signature.len);
 
-            try jwt_text.resize(payload_base64_len + 1 + protected_header_base64_len + 1 + signature_base64_len);
-            var signature_base64 = jwt_text.items[payload_base64_len + 1 + protected_header_base64_len + 1 ..][0..signature_base64_len];
+            try jwt_text.resize(message_base64_len + 1 + protected_header_base64_len + 1 + signature_base64_len);
+            var signature_base64 = jwt_text.items[message_base64_len + 1 + protected_header_base64_len + 1 ..][0..signature_base64_len];
 
-            jwt_text.items[payload_base64_len + 1 + protected_header_base64_len] = '.';
+            jwt_text.items[message_base64_len + 1 + protected_header_base64_len] = '.';
             _ = base64url.Encoder.encode(signature_base64, &signature);
         },
     }
@@ -76,7 +80,21 @@ pub fn encode(allocator: *std.mem.Allocator, payload: anytype, signatureOptions:
     return jwt_text.toOwnedSlice();
 }
 
-pub fn validate(allocator: *std.mem.Allocator, tokenText: []const u8, signatureOptions: SignatureOptions) !ValueTree {
+pub fn validate(comptime P: type, allocator: *std.mem.Allocator, tokenText: []const u8, signatureOptions: SignatureOptions) !P {
+    const message = try validateMessage(allocator, tokenText, signatureOptions);
+    defer allocator.free(message);
+
+    // 10.  Verify that the resulting octet sequence is a UTF-8-encoded
+    //      representation of a completely valid JSON object conforming to
+    //      RFC 7159 [RFC7159]; let the JWT Claims Set be this JSON object.
+    return std.json.parse(P, &std.json.TokenStream.init(message), .{ .allocator = allocator });
+}
+
+pub fn validateFree(comptime P: type, allocator: *std.mem.Allocator, value: P) void {
+    std.json.parseFree(P, value, .{ .allocator = allocator });
+}
+
+pub fn validateMessage(allocator: *std.mem.Allocator, tokenText: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
     // 1.   Verify that the JWT contains at least one period ('.')
     //      character.
     // 2.   Let the Encoded JOSE Header be the portion of the JWT before the
@@ -202,17 +220,10 @@ pub fn validate(allocator: *std.mem.Allocator, tokenText: []const u8, signatureO
     //      restriction that no line breaks, whitespace, or other additional
     //      characters have been used.
     var message = try allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(message_base64));
-    defer allocator.free(message);
+    errdefer allocator.free(message);
     try base64url.Decoder.decode(message, message_base64);
 
-    // 10.  Verify that the resulting octet sequence is a UTF-8-encoded
-    //      representation of a completely valid JSON object conforming to
-    //      RFC 7159 [RFC7159]; let the JWT Claims Set be this JSON object.
-    var message_parser = std.json.Parser.init(allocator, true);
-    defer message_parser.deinit();
-
-    var message_tree = try message_parser.parse(message);
-    return message_tree;
+    return message;
 }
 
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
@@ -257,23 +268,32 @@ test "validate jws hmac sha-256" {
     defer std.testing.allocator.free(key);
     try base64url.Decoder.decode(key, key_base64);
 
-    var claims_tree = try validate(std.testing.allocator, token, .{ .alg = .HS256, .key = key });
-    defer claims_tree.deinit();
+    const Payload = struct {
+        iss: []const u8,
+        exp: i64,
+        @"http://example.com/is_root": bool,
+    };
 
-    var claims = claims_tree.root;
+    var claims = try validate(Payload, std.testing.allocator, token, .{ .alg = .HS256, .key = key });
+    defer validateFree(Payload, std.testing.allocator, claims);
 
-    try std.testing.expectEqualSlices(u8, "joe", claims.Object.get("iss").?.String);
-    try std.testing.expectEqual(@as(i64, 1300819380), claims.Object.get("exp").?.Integer);
-    try std.testing.expectEqual(true, claims.Object.get("http://example.com/is_root").?.Bool);
+    try std.testing.expectEqualSlices(u8, "joe", claims.iss);
+    try std.testing.expectEqual(@as(i64, 1300819380), claims.exp);
+    try std.testing.expectEqual(true, claims.@"http://example.com/is_root");
 }
 
 test "generate and then validate jws hmac sha-256" {
     const key = "a jws hmac sha-256 test key";
 
-    const payload = .{
+    const Payload = struct {
+        sub: []const u8,
+        name: []const u8,
+        iat: i64,
+    };
+    const payload = Payload{
         .sub = "1234567890",
         .name = "John Doe",
-        .iat = @as(i64, 1516239022),
+        .iat = 1516239022,
     };
 
     const signatureOptions = SignatureOptions{ .alg = .HS256, .key = key };
@@ -281,12 +301,10 @@ test "generate and then validate jws hmac sha-256" {
     const token = try encode(std.testing.allocator, payload, signatureOptions);
     defer std.testing.allocator.free(token);
 
-    var claims_tree = try validate(std.testing.allocator, token, signatureOptions);
-    defer claims_tree.deinit();
+    var decoded = try validate(Payload, std.testing.allocator, token, signatureOptions);
+    defer validateFree(Payload, std.testing.allocator, decoded);
 
-    var claims = claims_tree.root;
-
-    try std.testing.expectEqualSlices(u8, payload.sub, claims.Object.get("sub").?.String);
-    try std.testing.expectEqualSlices(u8, payload.name, claims.Object.get("name").?.String);
-    try std.testing.expectEqual(payload.iat, claims.Object.get("iat").?.Integer);
+    try std.testing.expectEqualSlices(u8, payload.sub, decoded.sub);
+    try std.testing.expectEqualSlices(u8, payload.name, decoded.name);
+    try std.testing.expectEqual(payload.iat, decoded.iat);
 }
