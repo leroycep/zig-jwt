@@ -21,13 +21,13 @@ const JWTType = enum {
     JWE,
 };
 
-pub const HeaderOptions = struct {
+pub const SignatureOptions = struct {
     alg: Algorithm,
     key: []const u8,
     kid: ?[]const u8 = null,
 };
 
-pub fn encode(allocator: *std.mem.Allocator, payload: anytype, headerOptions: HeaderOptions) ![]const u8 {
+pub fn encode(allocator: *std.mem.Allocator, payload: anytype, signatureOptions: SignatureOptions) ![]const u8 {
     var payload_json = std.ArrayList(u8).init(allocator);
     defer payload_json.deinit();
 
@@ -35,9 +35,9 @@ pub fn encode(allocator: *std.mem.Allocator, payload: anytype, headerOptions: He
 
     var protected_header = std.json.ObjectMap.init(allocator);
     defer protected_header.deinit();
-    try protected_header.put("alg", .{ .String = std.meta.tagName(headerOptions.alg) });
+    try protected_header.put("alg", .{ .String = std.meta.tagName(signatureOptions.alg) });
     try protected_header.put("typ", .{ .String = "JWT" });
-    if (headerOptions.kid) |kid| {
+    if (signatureOptions.kid) |kid| {
         try protected_header.put("kid", .{ .String = kid });
     }
 
@@ -60,9 +60,9 @@ pub fn encode(allocator: *std.mem.Allocator, payload: anytype, headerOptions: He
     jwt_text.items[protected_header_base64_len] = '.';
     _ = base64url.Encoder.encode(payload_base64, payload_json.items);
 
-    switch (headerOptions.alg) {
+    switch (signatureOptions.alg) {
         .HS256 => {
-            const signature = generate_signature_hmac_sha256(headerOptions.key, protected_header_base64, payload_base64);
+            const signature = generate_signature_hmac_sha256(signatureOptions.key, protected_header_base64, payload_base64);
             const signature_base64_len = base64url.Encoder.calcSize(signature.len);
 
             try jwt_text.resize(payload_base64_len + 1 + protected_header_base64_len + 1 + signature_base64_len);
@@ -76,7 +76,7 @@ pub fn encode(allocator: *std.mem.Allocator, payload: anytype, headerOptions: He
     return jwt_text.toOwnedSlice();
 }
 
-pub fn validate(allocator: *std.mem.Allocator, algorithm: Algorithm, key: []const u8, tokenText: []const u8) !ValueTree {
+pub fn validate(allocator: *std.mem.Allocator, tokenText: []const u8, signatureOptions: SignatureOptions) !ValueTree {
     // 1.   Verify that the JWT contains at least one period ('.')
     //      character.
     // 2.   Let the Encoded JOSE Header be the portion of the JWT before the
@@ -120,7 +120,7 @@ pub fn validate(allocator: *std.mem.Allocator, algorithm: Algorithm, key: []cons
         const alg = std.meta.stringToEnum(Algorithm, alg_val.String) orelse return error.InvalidAlgorithm;
 
         // Make sure that the algorithm matches: https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries/
-        if (alg != algorithm) return error.InvalidAlgorithm;
+        if (alg != signatureOptions.alg) return error.InvalidAlgorithm;
 
         // TODO: Determine if "jku"/"jwk" need to be parsed and validated
 
@@ -168,9 +168,9 @@ pub fn validate(allocator: *std.mem.Allocator, algorithm: Algorithm, key: []cons
                 defer allocator.free(signature);
                 try base64url.Decoder.decode(signature, signature_base64);
 
-                switch (algorithm) {
+                switch (signatureOptions.alg) {
                     .HS256 => {
-                        const gen_sig = generate_signature_hmac_sha256(key, jose_base64, payload_base64);
+                        const gen_sig = generate_signature_hmac_sha256(signatureOptions.key, jose_base64, payload_base64);
                         if (!std.mem.eql(u8, signature, &gen_sig)) {
                             return error.InvalidSignature;
                         }
@@ -257,7 +257,7 @@ test "validate jws hmac sha-256" {
     defer std.testing.allocator.free(key);
     try base64url.Decoder.decode(key, key_base64);
 
-    var claims_tree = try validate(std.testing.allocator, .HS256, key, token);
+    var claims_tree = try validate(std.testing.allocator, token, .{ .alg = .HS256, .key = key });
     defer claims_tree.deinit();
 
     var claims = claims_tree.root;
@@ -276,10 +276,12 @@ test "generate and then validate jws hmac sha-256" {
         .iat = @as(i64, 1516239022),
     };
 
-    const token = try encode(std.testing.allocator, payload, .{ .alg = .HS256, .key = key });
+    const signatureOptions = SignatureOptions{ .alg = .HS256, .key = key };
+
+    const token = try encode(std.testing.allocator, payload, signatureOptions);
     defer std.testing.allocator.free(token);
 
-    var claims_tree = try validate(std.testing.allocator, .HS256, key, token);
+    var claims_tree = try validate(std.testing.allocator, token, signatureOptions);
     defer claims_tree.deinit();
 
     var claims = claims_tree.root;
