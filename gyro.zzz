@@ -1,0 +1,6 @@
+pkgs:
+  jwt:
+    version: 0.0.1
+    description: JSON Web Tokens for Zig
+    license: MIT
+    source_url: https://github.com/leroycep/zig-jwt
