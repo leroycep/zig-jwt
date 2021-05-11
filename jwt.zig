@@ -1,16 +1,80 @@
 const std = @import("std");
 const testing = std.testing;
 const ValueTree = std.json.ValueTree;
+const Value = std.json.Value;
 const base64url = std.base64.url_safe_no_pad;
 
 const Algorithm = enum {
     HS256,
+
+    pub fn jsonStringify(
+        value: @This(),
+        options: std.json.StringifyOptions,
+        writer: anytype,
+    ) @TypeOf(writer).Error!void {
+        try std.json.stringify(std.meta.tagName(value), options, writer);
+    }
 };
 
 const JWTType = enum {
     JWS,
     JWE,
 };
+
+pub const HeaderOptions = struct {
+    alg: Algorithm,
+    key: []const u8,
+    kid: ?[]const u8 = null,
+};
+
+pub fn encode(allocator: *std.mem.Allocator, payload: anytype, headerOptions: HeaderOptions) ![]const u8 {
+    var payload_json = std.ArrayList(u8).init(allocator);
+    defer payload_json.deinit();
+
+    try std.json.stringify(payload, .{}, payload_json.writer());
+
+    var protected_header = std.json.ObjectMap.init(allocator);
+    defer protected_header.deinit();
+    try protected_header.put("alg", .{ .String = std.meta.tagName(headerOptions.alg) });
+    try protected_header.put("typ", .{ .String = "JWT" });
+    if (headerOptions.kid) |kid| {
+        try protected_header.put("kid", .{ .String = kid });
+    }
+
+    var protected_header_json = std.ArrayList(u8).init(allocator);
+    defer protected_header_json.deinit();
+
+    try std.json.stringify(Value{ .Object = protected_header }, .{}, protected_header_json.writer());
+
+    const payload_base64_len = base64url.Encoder.calcSize(payload_json.items.len);
+    const protected_header_base64_len = base64url.Encoder.calcSize(protected_header_json.items.len);
+
+    var jwt_text = std.ArrayList(u8).init(allocator);
+    defer jwt_text.deinit();
+    try jwt_text.resize(payload_base64_len + 1 + protected_header_base64_len);
+
+    var protected_header_base64 = jwt_text.items[0..protected_header_base64_len];
+    var payload_base64 = jwt_text.items[protected_header_base64_len + 1 ..][0..payload_base64_len];
+
+    _ = base64url.Encoder.encode(protected_header_base64, protected_header_json.items);
+    jwt_text.items[protected_header_base64_len] = '.';
+    _ = base64url.Encoder.encode(payload_base64, payload_json.items);
+
+    switch (headerOptions.alg) {
+        .HS256 => {
+            const signature = generate_signature_hmac_sha256(headerOptions.key, protected_header_base64, payload_base64);
+            const signature_base64_len = base64url.Encoder.calcSize(signature.len);
+
+            try jwt_text.resize(payload_base64_len + 1 + protected_header_base64_len + 1 + signature_base64_len);
+            var signature_base64 = jwt_text.items[payload_base64_len + 1 + protected_header_base64_len + 1 ..][0..signature_base64_len];
+
+            jwt_text.items[payload_base64_len + 1 + protected_header_base64_len] = '.';
+            _ = base64url.Encoder.encode(signature_base64, &signature);
+        },
+    }
+
+    return jwt_text.toOwnedSlice();
+}
 
 pub fn validate(allocator: *std.mem.Allocator, algorithm: Algorithm, key: []const u8, tokenText: []const u8) !ValueTree {
     // 1.   Verify that the JWT contains at least one period ('.')
@@ -164,6 +228,27 @@ pub fn generate_signature_hmac_sha256(key: []const u8, protectedHeaderBase64: []
     return out;
 }
 
+test "generate jws hmac sha-256" {
+    const expected = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SVT7VUK8eOve-SCacPaU_bkzT3SFr9wk5EQciofG4Qo";
+    const key_base64 = "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow";
+
+    var key = try std.testing.allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(key_base64));
+    defer std.testing.allocator.free(key);
+    try base64url.Decoder.decode(key, key_base64);
+
+    // {"sub": "1234567890","name": "John Doe","iat": 1516239022}
+    const payload = .{
+        .sub = "1234567890",
+        .name = "John Doe",
+        .iat = 1516239022,
+    };
+
+    const token = try encode(std.testing.allocator, payload, .{ .alg = .HS256, .key = key });
+    defer std.testing.allocator.free(token);
+
+    try std.testing.expectEqualSlices(u8, expected, token);
+}
+
 test "validate jws hmac sha-256" {
     const token = "eyJ0eXAiOiJKV1QiLA0KICJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     const key_base64 = "AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow";
@@ -180,4 +265,26 @@ test "validate jws hmac sha-256" {
     try std.testing.expectEqualSlices(u8, "joe", claims.Object.get("iss").?.String);
     try std.testing.expectEqual(@as(i64, 1300819380), claims.Object.get("exp").?.Integer);
     try std.testing.expectEqual(true, claims.Object.get("http://example.com/is_root").?.Bool);
+}
+
+test "generate and then validate jws hmac sha-256" {
+    const key = "a jws hmac sha-256 test key";
+
+    const payload = .{
+        .sub = "1234567890",
+        .name = "John Doe",
+        .iat = @as(i64, 1516239022),
+    };
+
+    const token = try encode(std.testing.allocator, payload, .{ .alg = .HS256, .key = key });
+    defer std.testing.allocator.free(token);
+
+    var claims_tree = try validate(std.testing.allocator, .HS256, key, token);
+    defer claims_tree.deinit();
+
+    var claims = claims_tree.root;
+
+    try std.testing.expectEqualSlices(u8, payload.sub, claims.Object.get("sub").?.String);
+    try std.testing.expectEqualSlices(u8, payload.name, claims.Object.get("name").?.String);
+    try std.testing.expectEqual(payload.iat, claims.Object.get("iat").?.Integer);
 }
