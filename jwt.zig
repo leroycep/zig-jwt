@@ -5,15 +5,13 @@ const Value = std.json.Value;
 const base64url = std.base64.url_safe_no_pad;
 
 const Algorithm = enum {
+    const Self = @This();
+
     HS256,
     HS384,
     HS512,
 
-    pub fn jsonStringify(
-        value: @This(),
-        options: std.json.StringifyOptions,
-        writer: anytype,
-    ) @TypeOf(writer).Error!void {
+    pub fn jsonStringify(value: Self, options: std.json.StringifyOptions, writer: anytype) @TypeOf(writer).Error!void {
         try std.json.stringify(std.meta.tagName(value), options, writer);
     }
 };
