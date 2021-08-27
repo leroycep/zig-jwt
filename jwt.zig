@@ -179,7 +179,7 @@ pub fn validateMessage(allocator: *std.mem.Allocator, tokenText: []const u8, sig
             // validating a JWS.  Let the Message be the result of base64url
             // decoding the JWS Payload.
             .JWS => {
-                var section_iter = std.mem.split(tokenText, ".");
+                var section_iter = std.mem.split(u8, tokenText, ".");
                 std.debug.assert(section_iter.next() != null);
                 const payload_base64 = section_iter.next().?;
                 const signature_base64 = section_iter.rest();
