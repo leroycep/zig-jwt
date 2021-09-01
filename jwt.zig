@@ -5,16 +5,22 @@ const Value = std.json.Value;
 const base64url = std.base64.url_safe_no_pad;
 
 const Algorithm = enum {
+    const Self = @This();
+
     HS256,
     HS384,
     HS512,
 
-    pub fn jsonStringify(
-        value: @This(),
-        options: std.json.StringifyOptions,
-        writer: anytype,
-    ) @TypeOf(writer).Error!void {
+    pub fn jsonStringify(value: Self, options: std.json.StringifyOptions, writer: anytype) @TypeOf(writer).Error!void {
         try std.json.stringify(std.meta.tagName(value), options, writer);
+    }
+
+    pub fn CryptoFn(self: Self) type {
+        return switch (self) {
+            .HS256 => std.crypto.auth.hmac.sha2.HmacSha256,
+            .HS384 => std.crypto.auth.hmac.sha2.HmacSha384,
+            .HS512 => std.crypto.auth.hmac.sha2.HmacSha512,
+        };
     }
 };
 
@@ -24,24 +30,23 @@ const JWTType = enum {
 };
 
 pub const SignatureOptions = struct {
-    alg: Algorithm,
     key: []const u8,
     kid: ?[]const u8 = null,
 };
 
-pub fn encode(allocator: *std.mem.Allocator, payload: anytype, signatureOptions: SignatureOptions) ![]const u8 {
+pub fn encode(allocator: *std.mem.Allocator, comptime alg: Algorithm, payload: anytype, signatureOptions: SignatureOptions) ![]const u8 {
     var payload_json = std.ArrayList(u8).init(allocator);
     defer payload_json.deinit();
 
     try std.json.stringify(payload, .{}, payload_json.writer());
 
-    return try encodeMessage(allocator, payload_json.items, signatureOptions);
+    return try encodeMessage(allocator, alg, payload_json.items, signatureOptions);
 }
 
-pub fn encodeMessage(allocator: *std.mem.Allocator, message: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
+pub fn encodeMessage(allocator: *std.mem.Allocator, comptime alg: Algorithm, message: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
     var protected_header = std.json.ObjectMap.init(allocator);
     defer protected_header.deinit();
-    try protected_header.put("alg", .{ .String = std.meta.tagName(signatureOptions.alg) });
+    try protected_header.put("alg", .{ .String = std.meta.tagName(alg) });
     try protected_header.put("typ", .{ .String = "JWT" });
     if (signatureOptions.kid) |kid| {
         try protected_header.put("kid", .{ .String = kid });
@@ -66,11 +71,7 @@ pub fn encodeMessage(allocator: *std.mem.Allocator, message: []const u8, signatu
     jwt_text.items[protected_header_base64_len] = '.';
     _ = base64url.Encoder.encode(message_base64, message);
 
-    const signature = switch (signatureOptions.alg) {
-        .HS256 => &generate_signature_hmac_sha256(signatureOptions.key, protected_header_base64, message_base64),
-        .HS384 => &generate_signature_hmac_sha384(signatureOptions.key, protected_header_base64, message_base64),
-        .HS512 => &generate_signature_hmac_sha512(signatureOptions.key, protected_header_base64, message_base64),
-    };
+    const signature = &generate_signature(alg, signatureOptions.key, protected_header_base64, message_base64);
     const signature_base64_len = base64url.Encoder.calcSize(signature.len);
 
     try jwt_text.resize(message_base64_len + 1 + protected_header_base64_len + 1 + signature_base64_len);
@@ -82,8 +83,8 @@ pub fn encodeMessage(allocator: *std.mem.Allocator, message: []const u8, signatu
     return jwt_text.toOwnedSlice();
 }
 
-pub fn validate(comptime P: type, allocator: *std.mem.Allocator, tokenText: []const u8, signatureOptions: SignatureOptions) !P {
-    const message = try validateMessage(allocator, tokenText, signatureOptions);
+pub fn validate(comptime P: type, allocator: *std.mem.Allocator, comptime alg: Algorithm, tokenText: []const u8, signatureOptions: SignatureOptions) !P {
+    const message = try validateMessage(allocator, alg, tokenText, signatureOptions);
     defer allocator.free(message);
 
     // 10.  Verify that the resulting octet sequence is a UTF-8-encoded
@@ -96,7 +97,7 @@ pub fn validateFree(comptime P: type, allocator: *std.mem.Allocator, value: P) v
     std.json.parseFree(P, value, .{ .allocator = allocator });
 }
 
-pub fn validateMessage(allocator: *std.mem.Allocator, tokenText: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
+pub fn validateMessage(allocator: *std.mem.Allocator, comptime expectedAlg: Algorithm, tokenText: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
     // 1.   Verify that the JWT contains at least one period ('.')
     //      character.
     // 2.   Let the Encoded JOSE Header be the portion of the JWT before the
@@ -140,7 +141,7 @@ pub fn validateMessage(allocator: *std.mem.Allocator, tokenText: []const u8, sig
         const alg = std.meta.stringToEnum(Algorithm, alg_val.String) orelse return error.InvalidAlgorithm;
 
         // Make sure that the algorithm matches: https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries/
-        if (alg != signatureOptions.alg) return error.InvalidAlgorithm;
+        if (alg != expectedAlg) return error.InvalidAlgorithm;
 
         // TODO: Determine if "jku"/"jwk" need to be parsed and validated
 
@@ -179,7 +180,7 @@ pub fn validateMessage(allocator: *std.mem.Allocator, tokenText: []const u8, sig
             // validating a JWS.  Let the Message be the result of base64url
             // decoding the JWS Payload.
             .JWS => {
-                var section_iter = std.mem.split(tokenText, ".");
+                var section_iter = std.mem.split(u8, tokenText, ".");
                 std.debug.assert(section_iter.next() != null);
                 const payload_base64 = section_iter.next().?;
                 const signature_base64 = section_iter.rest();
@@ -188,11 +189,7 @@ pub fn validateMessage(allocator: *std.mem.Allocator, tokenText: []const u8, sig
                 defer allocator.free(signature);
                 try base64url.Decoder.decode(signature, signature_base64);
 
-                const gen_sig = switch (signatureOptions.alg) {
-                    .HS256 => &generate_signature_hmac_sha256(signatureOptions.key, jose_base64, payload_base64),
-                    .HS384 => &generate_signature_hmac_sha384(signatureOptions.key, jose_base64, payload_base64),
-                    .HS512 => &generate_signature_hmac_sha512(signatureOptions.key, jose_base64, payload_base64),
-                };
+                const gen_sig = &generate_signature(expectedAlg, signatureOptions.key, jose_base64, payload_base64);
                 if (!std.mem.eql(u8, signature, gen_sig)) {
                     return error.InvalidSignature;
                 }
@@ -228,40 +225,14 @@ pub fn validateMessage(allocator: *std.mem.Allocator, tokenText: []const u8, sig
     return message;
 }
 
-const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
-pub fn generate_signature_hmac_sha256(key: []const u8, protectedHeaderBase64: []const u8, payloadBase64: []const u8) [HmacSha256.mac_length]u8 {
-    var h = HmacSha256.init(key);
+pub fn generate_signature(comptime algo: Algorithm, key: []const u8, protectedHeaderBase64: []const u8, payloadBase64: []const u8) [algo.CryptoFn().mac_length]u8 {
+    const T = algo.CryptoFn();
+    var h = T.init(key);
     h.update(protectedHeaderBase64);
     h.update(".");
     h.update(payloadBase64);
 
-    var out: [HmacSha256.mac_length]u8 = undefined;
-    h.final(&out);
-
-    return out;
-}
-
-const HmacSha384 = std.crypto.auth.hmac.sha2.HmacSha384;
-pub fn generate_signature_hmac_sha384(key: []const u8, protectedHeaderBase64: []const u8, payloadBase64: []const u8) [HmacSha384.mac_length]u8 {
-    var h = HmacSha384.init(key);
-    h.update(protectedHeaderBase64);
-    h.update(".");
-    h.update(payloadBase64);
-
-    var out: [HmacSha384.mac_length]u8 = undefined;
-    h.final(&out);
-
-    return out;
-}
-
-const HmacSha512 = std.crypto.auth.hmac.sha2.HmacSha512;
-pub fn generate_signature_hmac_sha512(key: []const u8, protectedHeaderBase64: []const u8, payloadBase64: []const u8) [HmacSha512.mac_length]u8 {
-    var h = HmacSha512.init(key);
-    h.update(protectedHeaderBase64);
-    h.update(".");
-    h.update(payloadBase64);
-
-    var out: [HmacSha512.mac_length]u8 = undefined;
+    var out: [T.mac_length]u8 = undefined;
     h.final(&out);
 
     return out;
@@ -322,8 +293,8 @@ test "validate jws based tokens" {
 }
 
 test "generate and then validate jws token" {
-    try test_generate_then_validate(.{ .alg = .HS256, .key = "a jws hmac sha-256 test key" });
-    try test_generate_then_validate(.{ .alg = .HS384, .key = "a jws hmac sha-384 test key" });
+    try test_generate_then_validate(.HS256, .{ .key = "a jws hmac sha-256 test key" });
+    try test_generate_then_validate(.HS384, .{ .key = "a jws hmac sha-384 test key" });
 }
 
 const TestPayload = struct {
@@ -332,12 +303,12 @@ const TestPayload = struct {
     iat: i64,
 };
 
-fn test_generate(algorithm: Algorithm, payload: TestPayload, expected: []const u8, key_base64: []const u8) !void {
+fn test_generate(comptime algorithm: Algorithm, payload: TestPayload, expected: []const u8, key_base64: []const u8) !void {
     var key = try std.testing.allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(key_base64));
     defer std.testing.allocator.free(key);
     try base64url.Decoder.decode(key, key_base64);
 
-    const token = try encode(std.testing.allocator, payload, .{ .alg = algorithm, .key = key });
+    const token = try encode(std.testing.allocator, algorithm, payload, .{ .key = key });
     defer std.testing.allocator.free(token);
 
     try std.testing.expectEqualSlices(u8, expected, token);
@@ -349,12 +320,12 @@ const TestValidatePayload = struct {
     @"http://example.com/is_root": bool,
 };
 
-fn test_validate(algorithm: Algorithm, expected: TestValidatePayload, token: []const u8, key_base64: []const u8) !void {
+fn test_validate(comptime algorithm: Algorithm, expected: TestValidatePayload, token: []const u8, key_base64: []const u8) !void {
     var key = try std.testing.allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(key_base64));
     defer std.testing.allocator.free(key);
     try base64url.Decoder.decode(key, key_base64);
 
-    var claims = try validate(TestValidatePayload, std.testing.allocator, token, .{ .alg = algorithm, .key = key });
+    var claims = try validate(TestValidatePayload, std.testing.allocator, algorithm, token, .{ .key = key });
     defer validateFree(TestValidatePayload, std.testing.allocator, claims);
 
     try std.testing.expectEqualSlices(u8, expected.iss, claims.iss);
@@ -362,7 +333,7 @@ fn test_validate(algorithm: Algorithm, expected: TestValidatePayload, token: []c
     try std.testing.expectEqual(expected.@"http://example.com/is_root", claims.@"http://example.com/is_root");
 }
 
-fn test_generate_then_validate(signatureOptions: SignatureOptions) !void {
+fn test_generate_then_validate(comptime alg: Algorithm, signatureOptions: SignatureOptions) !void {
     const Payload = struct {
         sub: []const u8,
         name: []const u8,
@@ -374,10 +345,10 @@ fn test_generate_then_validate(signatureOptions: SignatureOptions) !void {
         .iat = 1516239022,
     };
 
-    const token = try encode(std.testing.allocator, payload, signatureOptions);
+    const token = try encode(std.testing.allocator, alg, payload, signatureOptions);
     defer std.testing.allocator.free(token);
 
-    var decoded = try validate(Payload, std.testing.allocator, token, signatureOptions);
+    var decoded = try validate(Payload, std.testing.allocator, alg, token, signatureOptions);
     defer validateFree(Payload, std.testing.allocator, decoded);
 
     try std.testing.expectEqualSlices(u8, payload.sub, decoded.sub);
