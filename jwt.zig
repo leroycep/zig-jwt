@@ -34,7 +34,7 @@ pub const SignatureOptions = struct {
     kid: ?[]const u8 = null,
 };
 
-pub fn encode(allocator: *std.mem.Allocator, comptime alg: Algorithm, payload: anytype, signatureOptions: SignatureOptions) ![]const u8 {
+pub fn encode(allocator: std.mem.Allocator, comptime alg: Algorithm, payload: anytype, signatureOptions: SignatureOptions) ![]const u8 {
     var payload_json = std.ArrayList(u8).init(allocator);
     defer payload_json.deinit();
 
@@ -43,7 +43,7 @@ pub fn encode(allocator: *std.mem.Allocator, comptime alg: Algorithm, payload: a
     return try encodeMessage(allocator, alg, payload_json.items, signatureOptions);
 }
 
-pub fn encodeMessage(allocator: *std.mem.Allocator, comptime alg: Algorithm, message: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
+pub fn encodeMessage(allocator: std.mem.Allocator, comptime alg: Algorithm, message: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
     var protected_header = std.json.ObjectMap.init(allocator);
     defer protected_header.deinit();
     try protected_header.put("alg", .{ .String = std.meta.tagName(alg) });
@@ -83,7 +83,7 @@ pub fn encodeMessage(allocator: *std.mem.Allocator, comptime alg: Algorithm, mes
     return jwt_text.toOwnedSlice();
 }
 
-pub fn validate(comptime P: type, allocator: *std.mem.Allocator, comptime alg: Algorithm, tokenText: []const u8, signatureOptions: SignatureOptions) !P {
+pub fn validate(comptime P: type, allocator: std.mem.Allocator, comptime alg: Algorithm, tokenText: []const u8, signatureOptions: SignatureOptions) !P {
     const message = try validateMessage(allocator, alg, tokenText, signatureOptions);
     defer allocator.free(message);
 
@@ -93,11 +93,11 @@ pub fn validate(comptime P: type, allocator: *std.mem.Allocator, comptime alg: A
     return std.json.parse(P, &std.json.TokenStream.init(message), .{ .allocator = allocator });
 }
 
-pub fn validateFree(comptime P: type, allocator: *std.mem.Allocator, value: P) void {
+pub fn validateFree(comptime P: type, allocator: std.mem.Allocator, value: P) void {
     std.json.parseFree(P, value, .{ .allocator = allocator });
 }
 
-pub fn validateMessage(allocator: *std.mem.Allocator, comptime expectedAlg: Algorithm, tokenText: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
+pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algorithm, tokenText: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
     // 1.   Verify that the JWT contains at least one period ('.')
     //      character.
     // 2.   Let the Encoded JOSE Header be the portion of the JWT before the
