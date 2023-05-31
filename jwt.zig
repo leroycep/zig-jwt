@@ -15,7 +15,7 @@ const Algorithm = enum {
         try std.json.stringify(std.meta.tagName(value), options, writer);
     }
 
-    pub fn CryptoFn(self: Self) type {
+    pub fn CryptoFn(comptime self: Self) type {
         return switch (self) {
             .HS256 => std.crypto.auth.hmac.sha2.HmacSha256,
             .HS384 => std.crypto.auth.hmac.sha2.HmacSha384,
@@ -46,16 +46,16 @@ pub fn encode(allocator: std.mem.Allocator, comptime alg: Algorithm, payload: an
 pub fn encodeMessage(allocator: std.mem.Allocator, comptime alg: Algorithm, message: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
     var protected_header = std.json.ObjectMap.init(allocator);
     defer protected_header.deinit();
-    try protected_header.put("alg", .{ .String = std.meta.tagName(alg) });
-    try protected_header.put("typ", .{ .String = "JWT" });
+    try protected_header.put("alg", .{ .string = std.meta.tagName(alg) });
+    try protected_header.put("typ", .{ .string = "JWT" });
     if (signatureOptions.kid) |kid| {
-        try protected_header.put("kid", .{ .String = kid });
+        try protected_header.put("kid", .{ .string = kid });
     }
 
     var protected_header_json = std.ArrayList(u8).init(allocator);
     defer protected_header_json.deinit();
 
-    try std.json.stringify(Value{ .Object = protected_header }, .{}, protected_header_json.writer());
+    try std.json.stringify(Value{ .object = protected_header }, .{}, protected_header_json.writer());
 
     const message_base64_len = base64url.Encoder.calcSize(message.len);
     const protected_header_base64_len = base64url.Encoder.calcSize(protected_header_json.items.len);
@@ -90,11 +90,11 @@ pub fn validate(comptime P: type, allocator: std.mem.Allocator, comptime alg: Al
     // 10.  Verify that the resulting octet sequence is a UTF-8-encoded
     //      representation of a completely valid JSON object conforming to
     //      RFC 7159 [RFC7159]; let the JWT Claims Set be this JSON object.
-    return std.json.parse(P, &std.json.TokenStream.init(message), .{ .allocator = allocator });
+    return std.json.parseFromSlice(P, allocator, message, .{});
 }
 
 pub fn validateFree(comptime P: type, allocator: std.mem.Allocator, value: P) void {
-    std.json.parseFree(P, value, .{ .allocator = allocator });
+    std.json.parseFree(P, allocator, value);
 }
 
 pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algorithm, tokenText: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
@@ -118,7 +118,7 @@ pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algor
 
     // TODO: Make sure the JSON parser confirms everything above
 
-    var parser = std.json.Parser.init(allocator, false);
+    var parser = std.json.Parser.init(allocator, .alloc_always);
     defer parser.deinit();
 
     var cty_opt = @as(?[]const u8, null);
@@ -133,21 +133,21 @@ pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algor
     //      understood.
 
     var jwt_root = jwt_tree.root;
-    if (jwt_root != .Object) return error.InvalidFormat;
+    if (jwt_root != .object) return error.InvalidFormat;
 
     {
-        var alg_val = jwt_root.Object.get("alg") orelse return error.InvalidFormat;
-        if (alg_val != .String) return error.InvalidFormat;
-        const alg = std.meta.stringToEnum(Algorithm, alg_val.String) orelse return error.InvalidAlgorithm;
+        var alg_val = jwt_root.object.get("alg") orelse return error.InvalidFormat;
+        if (alg_val != .string) return error.InvalidFormat;
+        const alg = std.meta.stringToEnum(Algorithm, alg_val.string) orelse return error.InvalidAlgorithm;
 
         // Make sure that the algorithm matches: https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries/
         if (alg != expectedAlg) return error.InvalidAlgorithm;
 
         // TODO: Determine if "jku"/"jwk" need to be parsed and validated
 
-        if (jwt_root.Object.get("crit")) |crit_val| {
-            if (crit_val != .Array) return error.InvalidFormat;
-            const crit = crit_val.Array;
+        if (jwt_root.object.get("crit")) |crit_val| {
+            if (crit_val != .array) return error.InvalidFormat;
+            const crit = crit_val.array;
             if (crit.items.len == 0) return error.InvalidFormat;
 
             // TODO: Implement or allow extensions?
@@ -210,8 +210,8 @@ pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algor
     //      "JWT", then the Message is a JWT that was the subject of nested
     //      signing or encryption operations.  In this case, return to Step
     //      1, using the Message as the JWT.
-    if (jwt_root.Object.get("cty")) |cty_val| {
-        if (cty_val != .String) return error.InvalidFormat;
+    if (jwt_root.object.get("cty")) |cty_val| {
+        if (cty_val != .string) return error.InvalidFormat;
         return error.Unimplemented;
     }
 
