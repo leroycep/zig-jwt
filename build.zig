@@ -3,14 +3,24 @@ const std = @import("std");
 pub fn build(b: *std.build.Builder) void {
     // Standard release options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
-    const mode = b.standardReleaseOptions();
+    const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary("zig-jwt", "jwt.zig");
-    lib.setBuildMode(mode);
-    lib.install();
+    const target = b.standardTargetOptions(.{});
+    _ = b.addModule("jwt", .{
+        .source_file = .{ .path = "jwt.zig" },
+    });
 
-    var main_tests = b.addTest("jwt.zig");
-    main_tests.setBuildMode(mode);
+    const lib = b.addStaticLibrary(.{
+        .name = "zig-jwt",
+        .root_source_file = .{ .path = "jwt.zig" },
+        .optimize = optimize,
+        .target = target,
+    });
+    b.installArtifact(lib);
+
+    var main_tests = b.addTest(.{
+        .root_source_file = .{ .path = "jwt.zig" },
+    });
 
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&main_tests.step);

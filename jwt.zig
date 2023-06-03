@@ -46,7 +46,7 @@ pub fn encode(allocator: std.mem.Allocator, comptime alg: Algorithm, payload: an
 pub fn encodeMessage(allocator: std.mem.Allocator, comptime alg: Algorithm, message: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
     var protected_header = std.json.ObjectMap.init(allocator);
     defer protected_header.deinit();
-    try protected_header.put("alg", .{ .string = std.meta.tagName(alg) });
+    try protected_header.put("alg", .{ .string = @tagName(alg) });
     try protected_header.put("typ", .{ .string = "JWT" });
     if (signatureOptions.kid) |kid| {
         try protected_header.put("kid", .{ .string = kid });
