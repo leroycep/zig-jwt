@@ -343,7 +343,7 @@ fn test_generate_then_validate(comptime alg: Algorithm, signatureOptions: Signat
     defer std.testing.allocator.free(token);
 
     var decoded_p = try validate(Payload, std.testing.allocator, alg, token, signatureOptions);
-    defer decoded_p.value;
+    defer decoded_p.deinit();
     const decoded = decoded_p.value;
 
     try std.testing.expectEqualSlices(u8, payload.sub, decoded.sub);
