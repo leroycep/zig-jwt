@@ -64,8 +64,8 @@ pub fn encodeMessage(allocator: std.mem.Allocator, comptime alg: Algorithm, mess
     defer jwt_text.deinit();
     try jwt_text.resize(message_base64_len + 1 + protected_header_base64_len);
 
-    var protected_header_base64 = jwt_text.items[0..protected_header_base64_len];
-    var message_base64 = jwt_text.items[protected_header_base64_len + 1 ..][0..message_base64_len];
+    const protected_header_base64 = jwt_text.items[0..protected_header_base64_len];
+    const message_base64 = jwt_text.items[protected_header_base64_len + 1 ..][0..message_base64_len];
 
     _ = base64url.Encoder.encode(protected_header_base64, protected_header_json.items);
     jwt_text.items[protected_header_base64_len] = '.';
@@ -75,7 +75,7 @@ pub fn encodeMessage(allocator: std.mem.Allocator, comptime alg: Algorithm, mess
     const signature_base64_len = base64url.Encoder.calcSize(signature.len);
 
     try jwt_text.resize(message_base64_len + 1 + protected_header_base64_len + 1 + signature_base64_len);
-    var signature_base64 = jwt_text.items[message_base64_len + 1 + protected_header_base64_len + 1 ..][0..signature_base64_len];
+    const signature_base64 = jwt_text.items[message_base64_len + 1 + protected_header_base64_len + 1 ..][0..signature_base64_len];
 
     jwt_text.items[message_base64_len + 1 + protected_header_base64_len] = '.';
     _ = base64url.Encoder.encode(signature_base64, signature);
@@ -98,13 +98,13 @@ pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algor
     //      character.
     // 2.   Let the Encoded JOSE Header be the portion of the JWT before the
     //      first period ('.') character.
-    var end_of_jose_base64 = std.mem.indexOfScalar(u8, tokenText, '.') orelse return error.InvalidFormat;
+    const end_of_jose_base64 = std.mem.indexOfScalar(u8, tokenText, '.') orelse return error.InvalidFormat;
     const jose_base64 = tokenText[0..end_of_jose_base64];
 
     // 3.   Base64url decode the Encoded JOSE Header following the
     //      restriction that no line breaks, whitespace, or other additional
     //      characters have been used.
-    var jose_json = try allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(jose_base64));
+    const jose_json = try allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(jose_base64));
     defer allocator.free(jose_json);
     try base64url.Decoder.decode(jose_json, jose_base64);
 
@@ -114,7 +114,7 @@ pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algor
 
     // TODO: Make sure the JSON parser confirms everything above
 
-    var cty_opt = @as(?[]const u8, null);
+    const cty_opt = @as(?[]const u8, null);
     defer if (cty_opt) |cty| allocator.free(cty);
 
     var jwt_tree = try std.json.parseFromSlice(std.json.Value, allocator, jose_json, .{});
@@ -129,7 +129,7 @@ pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algor
     if (jwt_root != .object) return error.InvalidFormat;
 
     {
-        var alg_val = jwt_root.object.get("alg") orelse return error.InvalidFormat;
+        const alg_val = jwt_root.object.get("alg") orelse return error.InvalidFormat;
         if (alg_val != .string) return error.InvalidFormat;
         const alg = std.meta.stringToEnum(Algorithm, alg_val.string) orelse return error.InvalidAlgorithm;
 
@@ -178,7 +178,7 @@ pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algor
                 const payload_base64 = section_iter.next().?;
                 const signature_base64 = section_iter.rest();
 
-                var signature = try allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(signature_base64));
+                const signature = try allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(signature_base64));
                 defer allocator.free(signature);
                 try base64url.Decoder.decode(signature, signature_base64);
 
@@ -211,7 +211,7 @@ pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algor
     // 9.   Otherwise, base64url decode the Message following the
     //      restriction that no line breaks, whitespace, or other additional
     //      characters have been used.
-    var message = try allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(message_base64));
+    const message = try allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(message_base64));
     errdefer allocator.free(message);
     try base64url.Decoder.decode(message, message_base64);
 
@@ -297,7 +297,7 @@ const TestPayload = struct {
 };
 
 fn test_generate(comptime algorithm: Algorithm, payload: TestPayload, expected: []const u8, key_base64: []const u8) !void {
-    var key = try std.testing.allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(key_base64));
+    const key = try std.testing.allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(key_base64));
     defer std.testing.allocator.free(key);
     try base64url.Decoder.decode(key, key_base64);
 
@@ -314,7 +314,7 @@ const TestValidatePayload = struct {
 };
 
 fn test_validate(comptime algorithm: Algorithm, expected: TestValidatePayload, token: []const u8, key_base64: []const u8) !void {
-    var key = try std.testing.allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(key_base64));
+    const key = try std.testing.allocator.alloc(u8, try base64url.Decoder.calcSizeForSlice(key_base64));
     defer std.testing.allocator.free(key);
     try base64url.Decoder.decode(key, key_base64);
 
