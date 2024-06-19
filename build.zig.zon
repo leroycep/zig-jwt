@@ -1,6 +1,6 @@
 .{
     .name = "zig-jwt",
-    .version = "1.0.0",
+    .version = "0.0.1",
     .paths = .{
         "build.zig",
         "build.zig.zon",
