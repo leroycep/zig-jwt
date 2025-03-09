@@ -173,7 +173,7 @@ pub fn validateMessage(allocator: std.mem.Allocator, comptime expectedAlg: Algor
             // validating a JWS.  Let the Message be the result of base64url
             // decoding the JWS Payload.
             .JWS => {
-                var section_iter = std.mem.split(u8, tokenText, ".");
+                var section_iter = std.mem.splitSequence(u8, tokenText, ".");
                 std.debug.assert(section_iter.next() != null);
                 const payload_base64 = section_iter.next().?;
                 const signature_base64 = section_iter.rest();
@@ -232,7 +232,7 @@ pub fn generate_signature(comptime algo: Algorithm, key: []const u8, protectedHe
 }
 
 test "generate jws based tokens" {
-    const payload = .{
+    const payload: TestPayload = .{
         .sub = "1234567890",
         .name = "John Doe",
         .iat = 1516239022,
