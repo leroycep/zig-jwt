@@ -1,6 +1,6 @@
 .{
-    .name = .zigjwt,
-    .fingerprint = 0x5bfe4160f02b3c48,
+    .name = .jwt,
+    .fingerprint = 0x8d17cdf0bb8eb51d,
     .version = "0.0.1",
     .paths = .{
         "build.zig",
