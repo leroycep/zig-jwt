@@ -35,12 +35,16 @@ pub const SignatureOptions = struct {
 };
 
 pub fn encode(allocator: std.mem.Allocator, comptime alg: Algorithm, payload: anytype, signatureOptions: SignatureOptions) ![]const u8 {
-    var payload_json = std.ArrayList(u8).init(allocator);
+    var payload_json = std.Io.Writer.Allocating.init(allocator);
     defer payload_json.deinit();
 
-    try std.json.stringify(payload, .{}, payload_json.writer());
+    var stringify = std.json.Stringify{
+        .writer = &payload_json.writer,
+        .options = .{},
+    };
+    try stringify.write(payload);
 
-    return try encodeMessage(allocator, alg, payload_json.items, signatureOptions);
+    return try encodeMessage(allocator, alg, payload_json.written(), signatureOptions);
 }
 
 pub fn encodeMessage(allocator: std.mem.Allocator, comptime alg: Algorithm, message: []const u8, signatureOptions: SignatureOptions) ![]const u8 {
@@ -52,33 +56,41 @@ pub fn encodeMessage(allocator: std.mem.Allocator, comptime alg: Algorithm, mess
         try protected_header.put("kid", .{ .string = kid });
     }
 
-    var protected_header_json = std.ArrayList(u8).init(allocator);
+    var protected_header_json = std.Io.Writer.Allocating.init(allocator);
     defer protected_header_json.deinit();
 
-    try std.json.stringify(Value{ .object = protected_header }, .{}, protected_header_json.writer());
+    var stringify = std.json.Stringify{
+        .writer = &protected_header_json.writer,
+        .options = .{},
+    };
+    try stringify.write(Value{ .object = protected_header });
 
     const message_base64_len = base64url.Encoder.calcSize(message.len);
-    const protected_header_base64_len = base64url.Encoder.calcSize(protected_header_json.items.len);
+    const protected_header_base64_len = base64url.Encoder.calcSize(protected_header_json.written().len);
 
-    var jwt_text = std.ArrayList(u8).init(allocator);
+    var jwt_text = std.Io.Writer.Allocating.init(allocator);
     defer jwt_text.deinit();
-    try jwt_text.resize(message_base64_len + 1 + protected_header_base64_len);
+    try jwt_text.ensureTotalCapacity(message_base64_len + 1 + protected_header_base64_len);
 
-    const protected_header_base64 = jwt_text.items[0..protected_header_base64_len];
-    const message_base64 = jwt_text.items[protected_header_base64_len + 1 ..][0..message_base64_len];
+    const signature = blk: {
+        const protected_header_base64 = jwt_text.writer.buffer[0..protected_header_base64_len];
+        const message_base64 = jwt_text.writer.buffer[protected_header_base64_len + 1 ..][0..message_base64_len];
 
-    _ = base64url.Encoder.encode(protected_header_base64, protected_header_json.items);
-    jwt_text.items[protected_header_base64_len] = '.';
-    _ = base64url.Encoder.encode(message_base64, message);
+        _ = base64url.Encoder.encode(protected_header_base64, protected_header_json.written());
+        jwt_text.writer.buffer[protected_header_base64_len] = '.';
+        _ = base64url.Encoder.encode(message_base64, message);
+        jwt_text.writer.end = protected_header_base64_len + 1 + message_base64_len;
 
-    const signature = &generate_signature(alg, signatureOptions.key, protected_header_base64, message_base64);
+        break :blk generate_signature(alg, signatureOptions.key, protected_header_base64, message_base64);
+    };
     const signature_base64_len = base64url.Encoder.calcSize(signature.len);
 
-    try jwt_text.resize(message_base64_len + 1 + protected_header_base64_len + 1 + signature_base64_len);
-    const signature_base64 = jwt_text.items[message_base64_len + 1 + protected_header_base64_len + 1 ..][0..signature_base64_len];
+    try jwt_text.ensureTotalCapacity(message_base64_len + 1 + protected_header_base64_len + 1 + signature_base64_len);
+    const signature_base64 = jwt_text.writer.buffer[message_base64_len + 1 + protected_header_base64_len + 1 ..][0..signature_base64_len];
 
-    jwt_text.items[message_base64_len + 1 + protected_header_base64_len] = '.';
-    _ = base64url.Encoder.encode(signature_base64, signature);
+    jwt_text.writer.buffer[message_base64_len + 1 + protected_header_base64_len] = '.';
+    _ = base64url.Encoder.encode(signature_base64, &signature);
+    jwt_text.writer.end += 1 + signature_base64_len;
 
     return jwt_text.toOwnedSlice();
 }
@@ -341,6 +353,7 @@ fn test_generate_then_validate(comptime alg: Algorithm, signatureOptions: Signat
 
     const token = try encode(std.testing.allocator, alg, payload, signatureOptions);
     defer std.testing.allocator.free(token);
+    errdefer std.debug.print("token = \"{f}\"\n", .{std.zig.fmtString(token)});
 
     var decoded_p = try validate(Payload, std.testing.allocator, alg, token, signatureOptions);
     defer decoded_p.deinit();
